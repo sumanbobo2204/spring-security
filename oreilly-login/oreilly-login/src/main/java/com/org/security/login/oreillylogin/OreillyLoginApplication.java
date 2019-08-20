@@ -1,11 +1,17 @@
 package com.org.security.login.oreillylogin;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.java.Log;
 import lombok.extern.log4j.Log4j2;
 import org.springframework.boot.SpringApplication;
+import org.springframework.boot.actuate.audit.listener.AuditApplicationEvent;
+import org.springframework.boot.actuate.autoconfigure.security.servlet.EndpointRequest;
+import org.springframework.boot.actuate.health.HealthEndpoint;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.event.EventListener;
+import org.springframework.core.annotation.Order;
 import org.springframework.security.authentication.AuthenticationProvider;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -17,9 +23,12 @@ import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.core.userdetails.UserDetailsPasswordService;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.factory.PasswordEncoderFactories;
+import org.springframework.security.crypto.password.DelegatingPasswordEncoder;
+import org.springframework.security.crypto.password.MessageDigestPasswordEncoder;
 import org.springframework.security.crypto.password.NoOpPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
@@ -46,11 +55,18 @@ public class OreillyLoginApplication {
 	}
 
 	@Bean
-	CustomUserDetailsService customUserDetailsService(){
+	PasswordEncoder oldPasswordEncoder() {
+		String md5 = "MD5";
+		return new DelegatingPasswordEncoder(md5, Collections.singletonMap
+				(md5, new MessageDigestPasswordEncoder(md5)));
+	}
+
+	@Bean
+	CustomUserDetailsService customUserDetailsService() {
 		Collection<UserDetails> users = Arrays.asList(
-			new CustomUserDetails("jlong", passwordEncoder().encode("jlong"), true, "USER"),
-			new CustomUserDetails("rob", passwordEncoder().encode("winch"), true, "USER","ADMIN"),
-			new CustomUserDetails("bob", passwordEncoder().encode("bob"), false, "ADMIN")
+			new CustomUserDetails("jlong", oldPasswordEncoder().encode("jlong"), true, "USER"),
+			new CustomUserDetails("rob", oldPasswordEncoder().encode("winch"), true, "USER","ADMIN"),
+			new CustomUserDetails("bob", oldPasswordEncoder().encode("bob"), false, "ADMIN")
 		);
 		return new CustomUserDetailsService(users);
 	}
@@ -67,6 +83,7 @@ public class OreillyLoginApplication {
 			userDetailsManager.createUser(bob);
 		};
 	}*/
+
 }
 
 /*@Controller
@@ -88,6 +105,7 @@ class LoginController {
 	}
 }*/
 
+
 /*@Configuration
 @EnableWebSecurity
 class LoginSecurityConfig extends WebSecurityConfigurerAdapter {
@@ -100,17 +118,18 @@ class LoginSecurityConfig extends WebSecurityConfigurerAdapter {
 	}
 }*/
 
+
 @RestController
 class GreetingsController {
 
-	@GetMapping("/greeting")
+	@GetMapping("/greetings")
 	String greet(Principal principal) {
 		return "Hello " +principal.getName();
 	}
 }
 
 @Log4j2
-class CustomUserDetailsService implements UserDetailsService {
+class CustomUserDetailsService implements UserDetailsService, UserDetailsPasswordService {
 
 	// in real scenario it should be a database or any data provider::
 	private final Map<String, UserDetails> userMap = new ConcurrentHashMap<>();
@@ -128,7 +147,26 @@ class CustomUserDetailsService implements UserDetailsService {
 		}
 		throw new UsernameNotFoundException(String.format("couldn't find %s!", username));
 	}
+	/**
+	 * @param user
+	 * @param newPassword
+	 * @return
+	 */
+	@Override
+	public UserDetails updatePassword(UserDetails user, String newPassword) {
+		log.info("prompted to update the password for user " + user.getUsername() +" to " +newPassword);
+		this.userMap.put(user.getUsername() , new CustomUserDetails(
+				user.getUsername(),
+				newPassword,
+				user.isEnabled(),
+				user.getAuthorities().stream().map(
+						o -> ((GrantedAuthority) o).getAuthority()).collect(Collectors.toList()).toArray(new String[0])
+		));
+		return loadUserByUsername(user.getUsername());
+	}
 }
+
+
 
 class CustomUserDetails implements UserDetails {
 
@@ -182,19 +220,19 @@ class CustomUserDetails implements UserDetails {
 }
 
 
-
-
 @Configuration
 @EnableWebSecurity
 @RequiredArgsConstructor
+@Order(2)
 class CustomAuthenticationProviderSecurityConfig extends WebSecurityConfigurerAdapter {
 
 	//private final CustomAuthencicationProvider customAuthencicationProvider;
 
-	/*@Override
+/*@Override
 	protected void configure(AuthenticationManagerBuilder auth) throws Exception {
 		auth.authenticationProvider(customAuthencicationProvider);
 	}*/
+
 
 	@Override
 	protected void configure(HttpSecurity http) throws Exception {
@@ -205,7 +243,7 @@ class CustomAuthenticationProviderSecurityConfig extends WebSecurityConfigurerAd
 
 
 // Custom authentication provider class ::
-/*@Component
+@Component
 class CustomAuthencicationProvider implements AuthenticationProvider {
 
 	private boolean isvalidUser(String user, String pass) {
@@ -230,4 +268,17 @@ class CustomAuthencicationProvider implements AuthenticationProvider {
 		// only supports username and password authentication.
 		return UsernamePasswordAuthenticationToken.class.isAssignableFrom(authentication);
 	}
-}*/
+}
+
+
+@Component
+@Log4j2
+class SecurityAuditEventListener {
+
+	@EventListener
+	public void onAuditEvent(AuditApplicationEvent auditApplicationEvent ) {
+		log.info(auditApplicationEvent.getAuditEvent().getPrincipal());
+		log.info(auditApplicationEvent.getAuditEvent().getData());
+		log.info(auditApplicationEvent.getAuditEvent().getTimestamp());
+	}
+}
